@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const axios = require("axios");
 require("dotenv").config();
 const { createClient } = require("@supabase/supabase-js");
 
@@ -13,42 +14,37 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
+// ClickPesa config
+const CLICKPESA = {
+  clientId: process.env.CLICKPESA_CLIENT_ID,
+  apiKey: process.env.CLICKPESA_API_KEY,
+  baseUrl: process.env.CLICKPESA_BASE_URL || "https://api.clickpesa.com",
+};
+
 // ── HEALTH CHECK ──
 app.get("/", (req, res) => {
-  res.json({ status: "FinXhubra Backend Running ✅", time: new Date() });
+  res.json({ 
+    status: "FinXhubra Backend Running ✅", 
+    time: new Date(),
+    payments: "ClickPesa Connected 💳",
+    database: "Supabase Connected 🗄️"
+  });
 });
 
 // ── AUTH ROUTES ──
 app.post("/auth/signup", async (req, res) => {
   try {
     const { email, password, name, role } = req.body;
-    if (!email || !password || !name) {
+    if (!email || !password || !name)
       return res.status(400).json({ error: "Email, password and name required" });
-    }
-    // Create auth user
+
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
+      email, password, email_confirm: true,
+      user_metadata: { name, role: role || "trader" }
     });
     if (authError) return res.status(400).json({ error: authError.message });
 
-    // Create profile
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .insert({
-        id: authData.user.id,
-        name,
-        email,
-        role: role || "trader",
-        is_admin: email.toLowerCase().includes("admin"),
-      })
-      .select()
-      .single();
-
-    if (profileError) return res.status(400).json({ error: profileError.message });
-
-    res.json({ success: true, user: profile });
+    res.json({ success: true, user: { id: authData.user.id, email, name } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -60,32 +56,20 @@ app.post("/auth/login", async (req, res) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return res.status(401).json({ error: "Invalid email or password" });
 
-    // Get profile
     const { data: profile } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", data.user.id)
-      .single();
+      .from("profiles").select("*").eq("id", data.user.id).single();
 
-    res.json({
-      success: true,
-      token: data.session.access_token,
-      user: profile,
-    });
+    res.json({ success: true, token: data.session.access_token, user: profile });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── PROVIDERS ROUTES ──
+// ── PROVIDERS ──
 app.get("/providers", async (req, res) => {
   try {
     const { data, error } = await supabase
-      .from("providers")
-      .select("*")
-      .eq("status", "active")
-      .order("id", { ascending: false });
-
+      .from("providers").select("*").eq("status", "active");
     if (error) return res.status(400).json({ error: error.message });
     res.json({ success: true, providers: data });
   } catch (err) {
@@ -93,51 +77,12 @@ app.get("/providers", async (req, res) => {
   }
 });
 
-app.post("/providers/register", async (req, res) => {
-  try {
-    const {
-      user_id, name, bio, strategy, risk_level,
-      assets, price_per_day
-    } = req.body;
-
-    // Generate provider credentials
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    const secret = Array.from({ length: 12 }, () =>
-      chars[Math.floor(Math.random() * chars.length)]
-    ).join("");
-    const providerId = Math.floor(10000 + Math.random() * 90000).toString();
-    const webhookUrl = `https://finxhubra-backend.up.railway.app/webhook/${providerId}`;
-
-    const { data, error } = await supabase
-      .from("providers")
-      .insert({
-        user_id, name, bio, strategy, risk_level,
-        assets, price_per_day,
-        provider_id: providerId,
-        secret_key: secret,
-        webhook_url: webhookUrl,
-        status: "pending",
-      })
-      .select()
-      .single();
-
-    if (error) return res.status(400).json({ error: error.message });
-    res.json({ success: true, provider: data });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── SIGNALS ROUTES ──
+// ── SIGNALS ──
 app.get("/signals/:providerId", async (req, res) => {
   try {
-    const { providerId } = req.params;
     const { data, error } = await supabase
-      .from("signals")
-      .select("*")
-      .eq("provider_id", providerId)
+      .from("signals").select("*").eq("provider_id", req.params.providerId)
       .order("created_at", { ascending: false });
-
     if (error) return res.status(400).json({ error: error.message });
     res.json({ success: true, signals: data });
   } catch (err) {
@@ -148,70 +93,145 @@ app.get("/signals/:providerId", async (req, res) => {
 // ── TRADINGVIEW WEBHOOK ──
 app.post("/webhook/:providerId", async (req, res) => {
   try {
+    const { asset, action, entry, stop_loss, take_profit, secret } = req.body;
     const { providerId } = req.params;
-    const { asset, action, entry, stop_loss, take_profit, timestamp, secret } = req.body;
 
-    // Validate provider and secret
-    const { data: provider, error: pError } = await supabase
-      .from("providers")
-      .select("*")
-      .eq("provider_id", providerId)
-      .single();
+    const { data: provider } = await supabase
+      .from("providers").select("*").eq("provider_id", providerId).single();
 
-    if (pError || !provider) {
-      return res.status(404).json({ error: "Provider not found" });
-    }
+    if (!provider) return res.status(404).json({ error: "Provider not found" });
+    if (provider.secret_key !== secret)
+      return res.status(401).json({ error: "Invalid secret — unauthorized" });
 
-    if (provider.secret_key !== secret) {
-      return res.status(401).json({ error: "Invalid secret key — unauthorized" });
-    }
+    const { data: signal, error } = await supabase.from("signals").insert({
+      provider_id: provider.id, asset, direction: action,
+      entry_price: entry, stop_loss, take_profit,
+      status: "ACTIVE", source: "tradingview", executed: false,
+    }).select().single();
 
-    // Save signal
-    const { data: signal, error: sError } = await supabase
-      .from("signals")
-      .insert({
-        provider_id: provider.id,
-        asset,
-        direction: action,
-        entry_price: entry,
-        stop_loss,
-        take_profit,
-        status: "ACTIVE",
-        source: "tradingview",
-        executed: false,
-      })
-      .select()
-      .single();
-
-    if (sError) return res.status(400).json({ error: sError.message });
-
-    console.log(`✅ Signal received: ${action} ${asset} from provider ${providerId}`);
-    res.json({ success: true, signal, message: "Signal received and saved" });
+    if (error) return res.status(400).json({ error: error.message });
+    console.log(`✅ Signal: ${action} ${asset} from ${providerId}`);
+    res.json({ success: true, signal });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── PAYMENTS ROUTES ──
+// ══════════════════════════════════════
+// ── CLICKPESA PAYMENTS ──
+// ══════════════════════════════════════
+
+// Helper — ClickPesa headers
+const cpHeaders = () => ({
+  "api-key": CLICKPESA.apiKey,
+  "client-id": CLICKPESA.clientId,
+  "Content-Type": "application/json",
+});
+
+// 1. Initiate M-Pesa / Airtel / Mobile Money payment
+app.post("/payments/mobile", async (req, res) => {
+  try {
+    const { phone, amount, currency, userId, providerId, paymentType, orderId } = req.body;
+
+    // Create payment request to ClickPesa
+    const response = await axios.post(
+      `${CLICKPESA.baseUrl}/v3/vendor/initiate-push-payment`,
+      {
+        amount: amount.toString(),
+        currency: currency || "TZS",
+        phoneNumber: phone,
+        orderId: orderId || `FXH-${Date.now()}`,
+        paymentReason: `FinXhubra Signal Access - ${paymentType}`,
+      },
+      { headers: cpHeaders() }
+    );
+
+    const { data } = response;
+
+    // Save pending payment to database
+    await supabase.from("payments").insert({
+      user_id: userId,
+      provider_id: providerId || null,
+      payment_type: paymentType,
+      amount,
+      transaction_id: data.referenceId || orderId,
+      status: "pending",
+    });
+
+    res.json({
+      success: true,
+      message: "Payment initiated — check your phone for prompt",
+      referenceId: data.referenceId,
+      status: data.status,
+    });
+  } catch (err) {
+    console.error("ClickPesa error:", err.response?.data || err.message);
+    res.status(500).json({ 
+      error: "Payment initiation failed",
+      details: err.response?.data?.message || err.message 
+    });
+  }
+});
+
+// 2. Check payment status
+app.get("/payments/status/:referenceId", async (req, res) => {
+  try {
+    const { referenceId } = req.params;
+
+    const response = await axios.get(
+      `${CLICKPESA.baseUrl}/v3/vendor/get-payment-status/${referenceId}`,
+      { headers: cpHeaders() }
+    );
+
+    const { data } = response;
+    const isSuccess = data.status === "SUCCESSFUL" || data.status === "SUCCESS";
+
+    // Update payment in database if successful
+    if (isSuccess) {
+      await supabase.from("payments")
+        .update({ status: "active", expires_at: getExpiryDate("daily") })
+        .eq("transaction_id", referenceId);
+    }
+
+    res.json({ success: true, status: data.status, isSuccess });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. ClickPesa webhook — receives payment confirmation
+app.post("/payments/clickpesa-webhook", async (req, res) => {
+  try {
+    const { referenceId, status, amount, phoneNumber } = req.body;
+    console.log(`💳 ClickPesa webhook: ${status} - ${referenceId}`);
+
+    if (status === "SUCCESSFUL" || status === "SUCCESS") {
+      // Update payment status in database
+      await supabase.from("payments")
+        .update({ status: "active", expires_at: getExpiryDate("daily") })
+        .eq("transaction_id", referenceId);
+
+      console.log(`✅ Payment confirmed: ${referenceId}`);
+    }
+
+    res.json({ received: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. Verify payment manually (fallback)
 app.post("/payments/verify", async (req, res) => {
   try {
-    const { user_id, provider_id, payment_type, amount, transaction_id } = req.body;
+    const { userId, providerId, paymentType, amount, transactionId } = req.body;
+    const expiresAt = getExpiryDate(paymentType);
 
-    // Calculate expiry
-    const durations = { daily: 1, weekly: 7, monthly: 30 };
-    const days = durations[payment_type] || 1;
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + days);
-
-    const { data, error } = await supabase
-      .from("payments")
-      .insert({
-        user_id, provider_id, payment_type, amount,
-        transaction_id, status: "active",
-        expires_at: expiresAt.toISOString(),
-      })
-      .select()
-      .single();
+    const { data, error } = await supabase.from("payments").insert({
+      user_id: userId, provider_id: providerId,
+      payment_type: paymentType, amount,
+      transaction_id: transactionId || `FXH-${Date.now()}`,
+      status: "active", expires_at: expiresAt,
+    }).select().single();
 
     if (error) return res.status(400).json({ error: error.message });
     res.json({ success: true, payment: data });
@@ -220,37 +240,17 @@ app.post("/payments/verify", async (req, res) => {
   }
 });
 
+// 5. Check access
 app.get("/payments/check/:userId/:providerId", async (req, res) => {
   try {
     const { userId, providerId } = req.params;
     const now = new Date().toISOString();
 
-    const { data, error } = await supabase
-      .from("payments")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("provider_id", providerId)
-      .eq("status", "active")
-      .gt("expires_at", now);
+    const { data } = await supabase.from("payments").select("*")
+      .eq("user_id", userId).eq("provider_id", providerId)
+      .eq("status", "active").gt("expires_at", now);
 
-    if (error) return res.status(400).json({ error: error.message });
-    res.json({ success: true, hasAccess: data.length > 0, payment: data[0] || null });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── ANNOUNCEMENTS ──
-app.get("/announcements", async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from("announcements")
-      .select("*")
-      .eq("active", true)
-      .order("created_at", { ascending: false });
-
-    if (error) return res.status(400).json({ error: error.message });
-    res.json({ success: true, announcements: data });
+    res.json({ success: true, hasAccess: data?.length > 0, payment: data?.[0] || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -259,24 +259,25 @@ app.get("/announcements", async (req, res) => {
 // ── WALLET ──
 app.post("/wallet/deposit", async (req, res) => {
   try {
-    const { user_id, amount } = req.body;
+    const { userId, amount } = req.body;
     const { data: profile } = await supabase
-      .from("profiles")
-      .select("wallet_balance")
-      .eq("id", user_id)
-      .single();
+      .from("profiles").select("wallet_balance").eq("id", userId).single();
 
     const newBalance = (profile?.wallet_balance || 0) + amount;
+    await supabase.from("profiles").update({ wallet_balance: newBalance }).eq("id", userId);
 
-    const { data, error } = await supabase
-      .from("profiles")
-      .update({ wallet_balance: newBalance })
-      .eq("id", user_id)
-      .select()
-      .single();
+    res.json({ success: true, newBalance });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-    if (error) return res.status(400).json({ error: error.message });
-    res.json({ success: true, new_balance: newBalance });
+// ── ANNOUNCEMENTS ──
+app.get("/announcements", async (req, res) => {
+  try {
+    const { data } = await supabase.from("announcements")
+      .select("*").eq("active", true).order("created_at", { ascending: false });
+    res.json({ success: true, announcements: data || [] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -285,22 +286,19 @@ app.post("/wallet/deposit", async (req, res) => {
 // ── ADMIN ──
 app.get("/admin/stats", async (req, res) => {
   try {
-    const [users, providers, payments, signals] = await Promise.all([
+    const [users, providers, payments] = await Promise.all([
       supabase.from("profiles").select("id", { count: "exact" }),
       supabase.from("providers").select("id", { count: "exact" }),
       supabase.from("payments").select("amount"),
-      supabase.from("signals").select("id", { count: "exact" }),
     ]);
 
     const totalRevenue = payments.data?.reduce((s, p) => s + (p.amount || 0), 0) || 0;
-
     res.json({
       success: true,
       stats: {
-        total_users: users.count || 0,
-        total_providers: providers.count || 0,
-        total_revenue: totalRevenue,
-        total_signals: signals.count || 0,
+        totalUsers: users.count || 0,
+        totalProviders: providers.count || 0,
+        totalRevenue,
       },
     });
   } catch (err) {
@@ -310,15 +308,8 @@ app.get("/admin/stats", async (req, res) => {
 
 app.patch("/admin/providers/:id/status", async (req, res) => {
   try {
-    const { id } = req.params;
-    const { status } = req.body;
-    const { data, error } = await supabase
-      .from("providers")
-      .update({ status })
-      .eq("id", id)
-      .select()
-      .single();
-
+    const { data, error } = await supabase.from("providers")
+      .update({ status: req.body.status }).eq("id", req.params.id).select().single();
     if (error) return res.status(400).json({ error: error.message });
     res.json({ success: true, provider: data });
   } catch (err) {
@@ -326,10 +317,18 @@ app.patch("/admin/providers/:id/status", async (req, res) => {
   }
 });
 
-// ── START SERVER ──
+// ── HELPER ──
+function getExpiryDate(type) {
+  const d = new Date();
+  const days = { daily: 1, weekly: 7, monthly: 30 };
+  d.setDate(d.getDate() + (days[type] || 1));
+  return d.toISOString();
+}
+
+// ── START ──
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`🚀 FinXhubra Backend running on port ${PORT}`);
-  console.log(`📡 Webhook endpoint: /webhook/:providerId`);
-  console.log(`🔐 Auth endpoints: /auth/signup, /auth/login`);
+  console.log(`🚀 FinXhubra Backend on port ${PORT}`);
+  console.log(`💳 ClickPesa: ${CLICKPESA.baseUrl}`);
+  console.log(`🗄️  Supabase: ${process.env.SUPABASE_URL}`);
 });
