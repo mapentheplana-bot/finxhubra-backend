@@ -4,9 +4,42 @@ const axios = require("axios");
 require("dotenv").config();
 const { createClient } = require("@supabase/supabase-js");
 
+// ── ENV VALIDATION ──
+const REQUIRED_ENV = ["SUPABASE_URL", "SUPABASE_SERVICE_KEY", "CLICKPESA_CLIENT_ID", "CLICKPESA_API_KEY"];
+REQUIRED_ENV.forEach(key => {
+  if (!process.env[key]) {
+    console.error(`❌ Missing env variable: ${key}`);
+    process.exit(1);
+  }
+});
 const app = express();
 app.use(cors());
 app.use(express.json());
+// ── JWT MIDDLEWARE ──
+const authenticate = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "No token provided" });
+    }
+    const token = authHeader.split(" ")[1];
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (error || !user) return res.status(401).json({ error: "Invalid or expired token" });
+    req.user = user;
+    next();
+  } catch (err) {
+    res.status(401).json({ error: "Authentication failed" });
+  }
+};
+
+const requireAdmin = async (req, res, next) => {
+  const { data: profile } = await supabase
+    .from("profiles").select("role").eq("id", req.user.id).single();
+  if (profile?.role !== "admin") {
+    return res.status(403).json({ error: "Admin access required" });
+  }
+  next();
+};
 
 // ── JWT MIDDLEWARE ──
 const authenticate = async (req, res, next) => {
@@ -266,7 +299,7 @@ app.post("/payments/verify", async (req, res) => {
 });
 
 // 5. Check access
-app.get("/payments/check/:userId/:providerId", authenticate, async (req, res) => {
+app.get("/payments/check/:userId/:providerId", authenticate, async (req, res) => {/:userId/:providerId", authenticate, async (req, res) => {
   try {
     const { userId, providerId } = req.params;
     const now = new Date().toISOString();
@@ -331,7 +364,7 @@ app.get("/admin/stats", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
-app.patch("/admin/providers/:id/status", authenticate, requireAdmin, async (req, res) => {
+app.patch("/admin/providers/:id/status", authenticate, requireAdmin, async (req, res) => {/:id/status", authenticate, requireAdmin, async (req, res) => {
   try {
     const { data, error } = await supabase.from("providers")
       .update({ status: req.body.status }).eq("id", req.params.id).select().single();
