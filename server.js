@@ -5,7 +5,7 @@ require("dotenv").config();
 const { createClient } = require("@supabase/supabase-js");
 
 // ── ENV VALIDATION ──
-const REQUIRED_ENV = ["SUPABASE_URL", "SUPABASE_SERVICE_KEY", "CLICKPESA_CLIENT_ID", "CLICKPESA_API_KEY"];
+// ── ENV VALIDATION ── const REQUIRED_ENV = ["SUPABASE_URL", "SUPABASE_SERVICE_KEY", "CLICKPESA_CLIENT_ID", "CLICKPESA_API_KEY"]; REQUIRED_ENV.forEach(key => {   if (!process.env[key]) {     console.error(`❌ Missing env variable: ${key}`);     process.exit(1);   } });
 REQUIRED_ENV.forEach(key => {
   if (!process.env[key]) {
     console.error(`❌ Missing env variable: ${key}`);
