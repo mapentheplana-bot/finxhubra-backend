@@ -246,6 +246,39 @@ app.get("/payments/check/:userId/:providerId", authenticate, async (req, res) =>
   }
 });
 
+// ── SUBSCRIPTIONS ──
+app.get("/subscriptions/:userId", authenticate, async (req, res) => {
+  try {
+    const now = new Date().toISOString();
+    const { data, error } = await supabase
+      .from("payments")
+      .select("*, providers(name)")
+      .eq("user_id", req.params.userId)
+      .eq("status", "active")
+      .gt("expires_at", now)
+      .order("expires_at", { ascending: false });
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ success: true, subscriptions: data || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/subscriptions/cancel", authenticate, async (req, res) => {
+  try {
+    const { userId, providerId } = req.body;
+    const { error } = await supabase
+      .from("payments")
+      .update({ status: "cancelled" })
+      .eq("user_id", userId)
+      .eq("provider_id", providerId)
+      .eq("status", "active");
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ success: true, message: "Subscription cancelled" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // ── WALLET ──
 app.post("/wallet/deposit", async (req, res) => {
   try {
@@ -255,6 +288,28 @@ app.post("/wallet/deposit", async (req, res) => {
     const newBalance = (profile?.wallet_balance || 0) + amount;
     await supabase.from("profiles").update({ wallet_balance: newBalance }).eq("id", userId);
     res.json({ success: true, newBalance });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.post("/wallet/withdraw", authenticate, async (req, res) => {
+  try {
+    const { userId, amount, phone } = req.body;
+    if (!amount || amount <= 0)
+      return res.status(400).json({ error: "Invalid amount" });
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("wallet_balance")
+      .eq("id", userId)
+      .single();
+    if (!profile || profile.wallet_balance < amount)
+      return res.status(400).json({ error: "Insufficient balance" });
+    const newBalance = profile.wallet_balance - amount;
+    await supabase
+      .from("profiles")
+      .update({ wallet_balance: newBalance })
+      .eq("id", userId);
+    res.json({ success: true, newBalance, message: "Withdrawal successful" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
