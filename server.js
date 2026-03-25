@@ -1,3 +1,10 @@
+const crypto = require("crypto");
+const crypto = require("crypto");
+const express = require("express");
+const cors = require("cors");
+const axios = require("axios");
+require("dotenv").config();
+const { createClient } = require("@supabase/supabase-js");
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
