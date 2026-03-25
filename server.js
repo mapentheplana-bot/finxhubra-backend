@@ -482,6 +482,34 @@ app.patch("/withdrawals/:id/approve", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ── NOTIFICATIONS ──
+app.get("/notifications/:userId", authenticate, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("notifications")
+      .select("*")
+      .eq("user_id", req.params.userId)
+      .order("created_at", { ascending: false })
+      .limit(20);
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ success: true, notifications: data || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch("/notifications/:id/read", authenticate, async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from("notifications")
+      .update({ read: true })
+      .eq("id", req.params.id);
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ════════════════════════════════════════
 // WALLET
