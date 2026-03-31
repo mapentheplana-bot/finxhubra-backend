@@ -726,4 +726,3 @@ app.listen(PORT, () => {
   console.log(`💰 Commission: ${PROVIDER_CUT*100}% provider / ${PLATFORM_CUT*100}% platform`);
   console.log(`📅 Forex pricing: 5 days/week, 21 days/month`);
 });
-
